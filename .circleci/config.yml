@@ -38,9 +38,9 @@ workflows:
               only: /^v.*/
       - run on staging:
           filters:
-            branch:
+            branches:
               only: staging
       - run on master:
           filters:
-            branch:
+            branches:
               only: master
