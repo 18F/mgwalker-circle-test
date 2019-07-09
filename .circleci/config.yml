@@ -1,0 +1,46 @@
+version: 2.1
+
+jobs:
+  say hello:
+    docker:
+      - image: node:10
+    steps:
+      - run:
+          command: echo "hello"
+  run on tag:
+    docker:
+      - image: node:10
+    steps:
+      - run:
+          command: echo "running on tag"
+  run on staging:
+    docker:
+      - image: node:10
+    steps:
+      - run:
+          command: echo "running on staging"
+  run on master:
+    docker:
+      - image: node:10
+    steps:
+      - run:
+         command: echo "running on master"
+
+workflows:
+  version: 2
+
+  workity:
+    jobs:
+      - say hello
+      - run on tag:
+          filters:
+            tags:
+              only: /^v.*/
+      - run on staging:
+          filters:
+            branch:
+              only: staging
+      - run on master:
+          filters:
+            branch:
+              only: master
