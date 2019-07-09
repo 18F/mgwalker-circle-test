@@ -47,7 +47,11 @@ workflows:
           filters:
             branches:
               only: staging
+          requires:
+            - say hello
       - run on master:
           filters:
             branches:
               only: master
+          requires:
+            - say hello
