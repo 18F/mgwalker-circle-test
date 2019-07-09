@@ -32,12 +32,17 @@ workflows:
   workity:
     jobs:
       - say hello
+          filters:
+            tags:
+              only: /^v.*/
       - run on tag:
           filters:
             branches:
               ignore: /^.*/
             tags:
               only: /^v.*/
+          requires:
+            - say hello
       - run on staging:
           filters:
             branches:
