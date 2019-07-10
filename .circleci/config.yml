@@ -1,57 +1,363 @@
 version: 2.1
 
-jobs:
-  say hello:
-    docker:
-      - image: node:10
-    steps:
-      - run:
-          command: echo "hello"
-  run on tag:
-    docker:
-      - image: node:10
-    steps:
-      - run:
-          command: echo "running on tag"
-  run on staging:
-    docker:
-      - image: node:10
-    steps:
-      - run:
-          command: echo "running on staging"
-  run on master:
-    docker:
-      - image: node:10
-    steps:
-      - run:
-         command: echo "running on master"
-
 workflows:
   version: 2
 
-  workity:
+  # Workflow to cleanup preview deploys from AWS.  Runs every two hours.
+  cleanup preview deploys:
+    triggers:
+      - schedule:
+          # Run every hour, every day. Specified this way because the more
+          # compact cron syntax wasn't working.
+          cron: '0 * * * *'
+          filters:
+            branches:
+              only:
+                - master
     jobs:
-      - say hello:
+      - cleanup preview deploys
+
+  # Workflow to test, build, and deploy the backend and frontend
+  test, build, and deploy:
+    jobs:
+      # independent jobs
+      - check docker-compose image tags:
           filters:
             tags:
               only: /.*/
-      - run on tag:
+      - install dependencies:
+          filters:
+            tags:
+              only: /.*/
+      - validate openapi:
+          filters:
+            tags:
+              only: /.*/
+      - yaml test:
+          filters:
+            tags:
+              only: /.*/
+
+      # backend jobs
+      - backend api endpoint test:
+          filters:
+            tags:
+              only: /.*/
+          requires:
+            - install dependencies
+      - dependency vulnerability scan:
+          filters:
+            tags:
+              only: /.*/
+          name: backend dependency vulnerability scan
+          path: api
+          requires:
+            - install dependencies
+      - backend lint:
+          filters:
+            tags:
+              only: /.*/
+          requires:
+            - install dependencies
+      - backend unit test:
+          filters:
+            tags:
+              only: /.*/
+          requires:
+            - install dependencies
+      - backend deploy:
+          name: backend deploy staging
+          env: STAGING
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - store artifacts staging
+            - backend api endpoint test
+            - backend dependency vulnerability scan
+            - backend lint
+            - backend unit test
+      - backend deploy:
+          name: backend deploy prod
+          env: PRODUCTION
           filters:
             branches:
               ignore: /.*/
             tags:
               only: /^v.*/
           requires:
-            - say hello
-      - run on staging:
+            - store artifacts prod
+            - backend api endpoint test
+            - backend dependency vulnerability scan
+            - backend lint
+            - backend unit test
+
+      # frontend jobs
+      - dependency vulnerability scan:
+          filters:
+            tags:
+              only: /.*/
+          name: frontend dependency vulnerability scan
+          path: web
+          requires:
+            - install dependencies
+      - frontend lint:
+          filters:
+            tags:
+              only: /.*/
+          requires:
+            - install dependencies
+      - frontend test:
+          filters:
+            tags:
+              only: /.*/
+          requires:
+            - install dependencies
+            - yaml test
+      - frontend build:
+          name: frontend build preview
+          env: PRODUCTION
           filters:
             branches:
-              only: staging
+              ignore:
+                - master
           requires:
-            - say hello
-      - run on master:
+            - frontend dependency vulnerability scan
+      - frontend build:
+          name: frontend build prod
+          env: PRODUCTION
           filters:
             branches:
-              only: master
+              ignore: /.*/
+            tags:
+              only: /^v.*/
           requires:
-            - say hello
+            - frontend dependency vulnerability scan
+      - frontend build:
+          name: frontend build staging
+          env: STAGING
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - frontend dependency vulnerability scan
+      - frontend deploy:
+          name: frontend deploy staging
+          env: STAGING
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - frontend build staging
+            - frontend dependency vulnerability scan
+            - frontend lint
+            - frontend test
+            - yaml test
+      - frontend deploy:
+          name: frontend deploy production
+          env: PRODUCTION
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v.*/
+          requires:
+            - frontend build prod
+            - frontend dependency vulnerability scan
+            - frontend lint
+            - frontend test
+            - yaml test
+
+      # joint jobs
+      - preview deploy:
+          filters:
+            branches:
+              ignore:
+                - master
+          requires:
+            - backend dependency vulnerability scan
+            - frontend build preview
+            - frontend dependency vulnerability scan
+            - yaml test
+
+      - store artifacts:
+          name: store artifacts staging
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - backend dependency vulnerability scan
+            - frontend build staging
+
+      - store artifacts:
+          name: store artifacts prod
+          filters:
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v.*/
+          requires:
+            - backend dependency vulnerability scan
+            - frontend build prod
+
+jobs:
+  # ===== Independent jobs =====
+  # These jobs don't rely on anything else having happened first, and cut
+  # across both backend and frontend.
+
+  # Checks that the image tags in the docker-compose.yml file match the md5
+  # hashes of the backend and frontend package-lock.json files.
+  check docker-compose image tags:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "check docker-compose image tags"
+
+  # Installs npm dependencies for the frontend and backend pieces, then saves
+  # those in the workflow workspace. Save the npm cache to CircleCI cache to
+  # speed up subsequent builds, but don't save the dependencies to cache
+  # because "npm ci" deletes the node_modules folder anyway so it's pointless.
+  install dependencies:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "install dependencies"
+
+  # Runs an OpenAPI validator on the API spec generated by our code to ensure
+  # it's a valid OpenAPI document.
+  validate openapi:
+    docker:
+      - image: circleci/node:10
+    steps:
+      - run: echo "validate openapi"
+
+  # Validates YAML files. Doesn't look at content, just structure. Doesn't
+  # enforce a schema either - strictly checks that the files are valid YAML.
+  yaml test:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "yaml test"
+
+  # ===== Backend jobs =====
+  # These all depend on "install dependencies" running first.
+
+  # Runs backend API integration/end-to-end tests.
+  backend api endpoint test:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "backend api endpoint test"
+
+  # Lints the backend code.
+  backend lint:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "backend lint"
+
+  # Runs backend unit tests and reports coverage to codecov.io.
+  backend unit test:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "backend unit test"
+
+  # ===== Frontend jobs =====
+  # These all depend on "install dependencies" running first.
+
+  # Builds the static web app into the ~/project/web/dist directory and then
+  # saves that into the workflow workspace.
+  frontend build:
+    parameters:
+      env:
+        description: The environment being deployed
+        type: string
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "frontend build << parameters.env >>"
+
+  # Lints the frontend code.
+  frontend lint:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "frontend lint"
+
+  # Runs frontend tests and reports coverage to codecov.io.
+  frontend test:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "Frontend test"
+
+  # ===== Shared jobs =====
+  # These all depend on "install dependencies" running first.
+
+  # Uses snyk to scan the installed dependencies for known vulnerabilities.
+  # Using the CLI instead of the web app means it scans actually-installed
+  # dependencies instead of "potentially-installed" dependencies, as inferred
+  # from the package.json file.
+  dependency vulnerability scan:
+    parameters:
+      path:
+        description: The path to test
+        type: string
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "<< parameters.path >> dependency vulnerability scan"
+
+  # ===== Deployment jobs =====
+  # These may have varying prerequisites, but they're grouped here because
+  # they are all related to deployment.
+
+  # Backend production deployment.
+  backend deploy:
+    parameters:
+      env:
+        description: The environment being deployed
+        type: string
+    docker:
+      - image: python:3
+    steps:
+      - run: echo "backend deploy << parameters.env>>"
+
+  # Cleans up preview deploys that are no longer associated with open pull
+  # requests.
+  cleanup preview deploys:
+    docker:
+      - image: python:3
+    steps:
+      - run: echo "cleanup preview deploy"
+
+  # Frontend production deployment.
+  frontend deploy:
+    parameters:
+      env:
+        description: The environment being deployed
+        type: string
+    docker:
+      - image: python:3
+    steps:
+      - run: echo "frontend deploy << parameters.env >>"
+  
+  # Preview deployment, used to put up preview links in pull requests
+  preview deploy:
+    docker:
+      - image: python:3
+    steps:
+      - run: echo "preview deploy"
+
+  # Zips up artifacts created in build steps and makes them available as
+  # CircleCI artifact downloads.
+  store artifacts:
+    docker:
+      - image: node:10
+    steps:
+      - run: echo "store artifacts"
